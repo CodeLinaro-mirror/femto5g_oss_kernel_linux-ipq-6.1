@@ -11,6 +11,10 @@
 
 #include "qrtr.h"
 
+extern int mhi_queue_skb(struct mhi_device *mhi_dev, struct mhi_chan *mhi_chan,
+		void *buf, size_t len, enum MHI_FLAGS mflags);
+
+
 struct qrtr_mhi_dev {
 	struct qrtr_endpoint ep;
 	struct mhi_device *mhi_dev;
@@ -92,7 +96,7 @@ static int qcom_mhi_qrtr_probe(struct mhi_device *mhi_dev,
 		return rc;
 
 	/* start channels */
-	rc = mhi_prepare_for_transfer_autoqueue(mhi_dev);
+	rc = mhi_prepare_for_transfer(mhi_dev);
 	if (rc) {
 		qrtr_endpoint_unregister(&qdev->ep);
 		return rc;
@@ -129,7 +133,9 @@ static struct mhi_driver qcom_mhi_qrtr_driver = {
 	},
 };
 
-module_mhi_driver(qcom_mhi_qrtr_driver);
+module_driver(qcom_mhi_qrtr_driver, mhi_driver_register,
+		mhi_driver_unregister);
+
 
 MODULE_AUTHOR("Chris Lew <clew@codeaurora.org>");
 MODULE_AUTHOR("Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>");

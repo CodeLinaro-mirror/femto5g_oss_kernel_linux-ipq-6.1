@@ -1,125 +1,113 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
  */
 #ifndef _MHI_H_
 #define _MHI_H_
 
-#include <linux/device.h>
-#include <linux/dma-direction.h>
-#include <linux/mutex.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/wait.h>
-#include <linux/workqueue.h>
-
-#define MHI_MAX_OEM_PK_HASH_SEGMENTS 16
 
 struct mhi_chan;
 struct mhi_event;
 struct mhi_ctxt;
 struct mhi_cmd;
+struct image_info;
+struct bhi_vec_entry;
+struct mhi_timesync;
 struct mhi_buf_info;
+struct mhi_sfr_info;
+
+#define REG_WRITE_QUEUE_LEN 1024
 
 /**
- * enum mhi_callback - MHI callback
+ * enum MHI_CB - MHI callback
  * @MHI_CB_IDLE: MHI entered idle state
  * @MHI_CB_PENDING_DATA: New data available for client to process
+ * @MHI_CB_DTR_SIGNAL: DTR signaling update
  * @MHI_CB_LPM_ENTER: MHI host entered low power mode
  * @MHI_CB_LPM_EXIT: MHI host about to exit low power mode
- * @MHI_CB_EE_RDDM: MHI device entered RDDM exec env
- * @MHI_CB_EE_MISSION_MODE: MHI device entered Mission Mode exec env
- * @MHI_CB_SYS_ERROR: MHI device entered error state (may recover)
- * @MHI_CB_FATAL_ERROR: MHI device entered fatal error state
- * @MHI_CB_BW_REQ: Received a bandwidth switch request from device
+ * @MHI_CB_EE_RDDM: MHI device entered RDDM execution enviornment
+ * @MHI_CB_EE_MISSION_MODE: MHI device entered Mission Mode ee
+ * @MHI_CB_SYS_ERROR: MHI device enter error state (may recover)
+ * @MHI_CB_FATAL_ERROR: MHI device entered fatal error
  */
-enum mhi_callback {
+enum MHI_CB {
 	MHI_CB_IDLE,
 	MHI_CB_PENDING_DATA,
+	MHI_CB_DTR_SIGNAL,
 	MHI_CB_LPM_ENTER,
 	MHI_CB_LPM_EXIT,
 	MHI_CB_EE_RDDM,
 	MHI_CB_EE_MISSION_MODE,
 	MHI_CB_SYS_ERROR,
 	MHI_CB_FATAL_ERROR,
-	MHI_CB_BW_REQ,
+	MHI_CB_FW_FALLBACK_IMG,
+	MHI_CB_DEVICE_DESTROYED,
 };
 
 /**
- * enum mhi_flags - Transfer flags
+ * enum MHI_DEBUG_LEVEL - various debugging level
+ */
+enum MHI_DEBUG_LEVEL {
+	MHI_MSG_LVL_VERBOSE,
+	MHI_MSG_LVL_INFO,
+	MHI_MSG_LVL_ERROR,
+	MHI_MSG_LVL_CRITICAL,
+	MHI_MSG_LVL_MASK_ALL,
+	MHI_MSG_LVL_MAX,
+};
+
+/**
+ * enum MHI_FLAGS - Transfer flags
  * @MHI_EOB: End of buffer for bulk transfer
  * @MHI_EOT: End of transfer
  * @MHI_CHAIN: Linked transfer
+ * @MHI_FLAGS_DMA_ADDR: DMA address available
  */
-enum mhi_flags {
-	MHI_EOB = BIT(0),
-	MHI_EOT = BIT(1),
-	MHI_CHAIN = BIT(2),
+enum MHI_FLAGS {
+	MHI_EOB,
+	MHI_EOT,
+	MHI_CHAIN,
+	/*
+	 * Make sure there is no conflict of MHI_FLAGS_DMA_ADDR, and
+	 * MHI_FLAGS_COHERENT_ADDR with other MHI_FLAGS.
+	 * Internally, MHI_FLAGS are used as bit fields.
+	 */
+	MHI_FLAGS_COHERENT_ADDR = 1 << 6,
+	MHI_FLAGS_DMA_ADDR = 1 << 7,
 };
 
 /**
  * enum mhi_device_type - Device types
- * @MHI_DEVICE_XFER: Handles data transfer
- * @MHI_DEVICE_CONTROLLER: Control device
+ * @MHI_XFER_TYPE: Handles data transfer
+ * @MHI_TIMESYNC_TYPE: Use for timesync feature
+ * @MHI_CONTROLLER_TYPE: Control device
  */
 enum mhi_device_type {
-	MHI_DEVICE_XFER,
-	MHI_DEVICE_CONTROLLER,
+	MHI_XFER_TYPE,
+	MHI_TIMESYNC_TYPE,
+	MHI_CONTROLLER_TYPE,
 };
 
 /**
- * enum mhi_ch_type - Channel types
- * @MHI_CH_TYPE_INVALID: Invalid channel type
- * @MHI_CH_TYPE_OUTBOUND: Outbound channel to the device
- * @MHI_CH_TYPE_INBOUND: Inbound channel from the device
- * @MHI_CH_TYPE_INBOUND_COALESCED: Coalesced channel for the device to combine
- *				   multiple packets and send them as a single
- *				   large packet to reduce CPU consumption
+ * enum mhi_ee - device current execution enviornment
+ * @MHI_EE_PBL - device in PBL
+ * @MHI_EE_SBL - device in SBL
+ * @MHI_EE_AMSS - device in mission mode (firmware fully loaded)
+ * @MHI_EE_RDDM - device in ram dump collection mode
+ * @MHI_EE_WFW - device in WLAN firmware mode
+ * @MHI_EE_PTHRU - device in PBL but configured in pass thru mode
+ * @MHI_EE_EDL - device in emergency download mode
  */
-enum mhi_ch_type {
-	MHI_CH_TYPE_INVALID = 0,
-	MHI_CH_TYPE_OUTBOUND = DMA_TO_DEVICE,
-	MHI_CH_TYPE_INBOUND = DMA_FROM_DEVICE,
-	MHI_CH_TYPE_INBOUND_COALESCED = 3,
-};
-
-/**
- * struct image_info - Firmware and RDDM table
- * @mhi_buf: Buffer for firmware and RDDM table
- * @entries: # of entries in table
- */
-struct image_info {
-	struct mhi_buf *mhi_buf;
-	/* private: from internal.h */
-	struct bhi_vec_entry *bhi_vec;
-	/* public: */
-	u32 entries;
-};
-
-/**
- * struct mhi_link_info - BW requirement
- * target_link_speed - Link speed as defined by TLS bits in LinkControl reg
- * target_link_width - Link width as defined by NLW bits in LinkStatus reg
- */
-struct mhi_link_info {
-	unsigned int target_link_speed;
-	unsigned int target_link_width;
-};
-
-/**
- * enum mhi_ee_type - Execution environment types
- * @MHI_EE_PBL: Primary Bootloader
- * @MHI_EE_SBL: Secondary Bootloader
- * @MHI_EE_AMSS: Modem, aka the primary runtime EE
- * @MHI_EE_RDDM: Ram dump download mode
- * @MHI_EE_WFW: WLAN firmware mode
- * @MHI_EE_PTHRU: Passthrough
- * @MHI_EE_EDL: Embedded downloader
- * @MHI_EE_FP: Flash Programmer Environment
- */
-enum mhi_ee_type {
+enum mhi_ee {
 	MHI_EE_PBL,
 	MHI_EE_SBL,
 	MHI_EE_AMSS,
@@ -127,26 +115,16 @@ enum mhi_ee_type {
 	MHI_EE_WFW,
 	MHI_EE_PTHRU,
 	MHI_EE_EDL,
-	MHI_EE_FP,
-	MHI_EE_MAX_SUPPORTED = MHI_EE_FP,
+	MHI_EE_MAX_SUPPORTED = MHI_EE_EDL,
 	MHI_EE_DISABLE_TRANSITION, /* local EE, not related to mhi spec */
 	MHI_EE_NOT_SUPPORTED,
 	MHI_EE_MAX,
 };
 
 /**
- * enum mhi_state - MHI states
- * @MHI_STATE_RESET: Reset state
- * @MHI_STATE_READY: Ready state
- * @MHI_STATE_M0: M0 state
- * @MHI_STATE_M1: M1 state
- * @MHI_STATE_M2: M2 state
- * @MHI_STATE_M3: M3 state
- * @MHI_STATE_M3_FAST: M3 Fast state
- * @MHI_STATE_BHI: BHI state
- * @MHI_STATE_SYS_ERR: System Error state
+ * enum mhi_dev_state - device current MHI state
  */
-enum mhi_state {
+enum mhi_dev_state {
 	MHI_STATE_RESET = 0x0,
 	MHI_STATE_READY = 0x1,
 	MHI_STATE_M0 = 0x2,
@@ -154,684 +132,803 @@ enum mhi_state {
 	MHI_STATE_M2 = 0x4,
 	MHI_STATE_M3 = 0x5,
 	MHI_STATE_M3_FAST = 0x6,
-	MHI_STATE_BHI = 0x7,
-	MHI_STATE_SYS_ERR = 0xFF,
+	MHI_STATE_BHI  = 0x7,
+	MHI_STATE_SYS_ERR  = 0xFF,
 	MHI_STATE_MAX,
 };
 
 /**
- * enum mhi_ch_ee_mask - Execution environment mask for channel
- * @MHI_CH_EE_PBL: Allow channel to be used in PBL EE
- * @MHI_CH_EE_SBL: Allow channel to be used in SBL EE
- * @MHI_CH_EE_AMSS: Allow channel to be used in AMSS EE
- * @MHI_CH_EE_RDDM: Allow channel to be used in RDDM EE
- * @MHI_CH_EE_PTHRU: Allow channel to be used in PTHRU EE
- * @MHI_CH_EE_WFW: Allow channel to be used in WFW EE
- * @MHI_CH_EE_EDL: Allow channel to be used in EDL EE
+ * struct mhi_link_info - bw requirement
+ * target_link_speed - as defined by TLS bits in LinkControl reg
+ * target_link_width - as defined by NLW bits in LinkStatus reg
+ * sequence_num - used by device to track bw requests sent to host
  */
-enum mhi_ch_ee_mask {
-	MHI_CH_EE_PBL = BIT(MHI_EE_PBL),
-	MHI_CH_EE_SBL = BIT(MHI_EE_SBL),
-	MHI_CH_EE_AMSS = BIT(MHI_EE_AMSS),
-	MHI_CH_EE_RDDM = BIT(MHI_EE_RDDM),
-	MHI_CH_EE_PTHRU = BIT(MHI_EE_PTHRU),
-	MHI_CH_EE_WFW = BIT(MHI_EE_WFW),
-	MHI_CH_EE_EDL = BIT(MHI_EE_EDL),
+struct mhi_link_info {
+	unsigned int target_link_speed;
+	unsigned int target_link_width;
+	int sequence_num;
+};
+
+#define MHI_VOTE_BUS BIT(0) /* do not disable the bus */
+#define MHI_VOTE_DEVICE BIT(1) /* prevent mhi device from entering lpm */
+
+/**
+ * struct image_info - firmware and rddm table table
+ * @mhi_buf - Contain device firmware and rddm table
+ * @entries - # of entries in table
+ */
+struct image_info {
+	struct mhi_buf *mhi_buf;
+	struct bhi_vec_entry *bhi_vec;
+	u32 entries;
+};
+
+/* rddm header info */
+
+#define MAX_RDDM_TABLE_SIZE 6
+
+/**
+ * struct rddm_table_info - rddm table info
+ * @base_address - Start offset of the file
+ * @actual_phys_address - phys addr offset of file
+ * @size - size of file
+ * @description - file description
+ * @file_name - name of file
+ */
+struct rddm_table_info {
+	u64 base_address;
+	u64 actual_phys_address;
+	u64 size;
+	char description[20];
+	char file_name[20];
 };
 
 /**
- * enum mhi_er_data_type - Event ring data types
- * @MHI_ER_DATA: Only client data over this ring
- * @MHI_ER_CTRL: MHI control data and client data
+ * struct rddm_header - rddm header
+ * @version - header ver
+ * @header_size - size of header
+ * @rddm_table_info - array of rddm table info
  */
-enum mhi_er_data_type {
-	MHI_ER_DATA,
-	MHI_ER_CTRL,
+struct rddm_header {
+	u32 version;
+	u32 header_size;
+	struct rddm_table_info table_info[MAX_RDDM_TABLE_SIZE];
 };
 
 /**
- * enum mhi_db_brst_mode - Doorbell mode
- * @MHI_DB_BRST_DISABLE: Burst mode disable
- * @MHI_DB_BRST_ENABLE: Burst mode enable
+ * struct file_info - keeping track of file info while traversing the rddm
+ * table header
+ * @file_offset - current file offset
+ * @seg_idx - mhi buf seg array index
+ * @rem_seg_len - remaining length of the segment containing current file
  */
-enum mhi_db_brst_mode {
-	MHI_DB_BRST_DISABLE = 0x2,
-	MHI_DB_BRST_ENABLE = 0x3,
+struct file_info {
+	u8 *file_offset;
+	u32 file_size;
+	u32 seg_idx;
+	u32 rem_seg_len;
 };
 
 /**
- * struct mhi_channel_config - Channel configuration structure for controller
- * @name: The name of this channel
- * @num: The number assigned to this channel
- * @num_elements: The number of elements that can be queued to this channel
- * @local_elements: The local ring length of the channel
- * @event_ring: The event ring index that services this channel
- * @dir: Direction that data may flow on this channel
- * @type: Channel type
- * @ee_mask: Execution Environment mask for this channel
- * @pollcfg: Polling configuration for burst mode.  0 is default.  milliseconds
-	     for UL channels, multiple of 8 ring elements for DL channels
- * @doorbell: Doorbell mode
- * @lpm_notify: The channel master requires low power mode notifications
- * @offload_channel: The client manages the channel completely
- * @doorbell_mode_switch: Channel switches to doorbell mode on M0 transition
- * @auto_queue: Framework will automatically queue buffers for DL traffic
- * @wake-capable: Channel capable of waking up the system
+ * struct reg_write_info - offload reg write info
+ * @reg_addr - register address
+ * @val - value to be written to register
+ * @chan - channel number
+ * @valid - entry is valid or not
  */
-struct mhi_channel_config {
-	char *name;
-	u32 num;
-	u32 num_elements;
-	u32 local_elements;
-	u32 event_ring;
-	enum dma_data_direction dir;
-	enum mhi_ch_type type;
-	u32 ee_mask;
-	u32 pollcfg;
-	enum mhi_db_brst_mode doorbell;
-	bool lpm_notify;
-	bool offload_channel;
-	bool doorbell_mode_switch;
-	bool auto_queue;
-	bool wake_capable;
+struct reg_write_info {
+	void __iomem *reg_addr;
+	u32 val;
+	bool valid;
 };
 
 /**
- * struct mhi_event_config - Event ring configuration structure for controller
- * @num_elements: The number of elements that can be queued to this ring
- * @irq_moderation_ms: Delay irq for additional events to be aggregated
- * @irq: IRQ associated with this ring
- * @channel: Dedicated channel number. U32_MAX indicates a non-dedicated ring
- * @priority: Priority of this ring. Use 1 for now
- * @mode: Doorbell mode
- * @data_type: Type of data this ring will process
- * @hardware_event: This ring is associated with hardware channels
- * @client_managed: This ring is client managed
- * @offload_channel: This ring is associated with an offloaded channel
- */
-struct mhi_event_config {
-	u32 num_elements;
-	u32 irq_moderation_ms;
-	u32 irq;
-	u32 channel;
-	u32 priority;
-	enum mhi_db_brst_mode mode;
-	enum mhi_er_data_type data_type;
-	bool hardware_event;
-	bool client_managed;
-	bool offload_channel;
-};
-
-/**
- * struct mhi_controller_config - Root MHI controller configuration
- * @max_channels: Maximum number of channels supported
- * @timeout_ms: Timeout value for operations. 0 means use default
- * @buf_len: Size of automatically allocated buffers. 0 means use default
- * @num_channels: Number of channels defined in @ch_cfg
- * @ch_cfg: Array of defined channels
- * @num_events: Number of event rings defined in @event_cfg
- * @event_cfg: Array of defined event rings
- * @use_bounce_buf: Use a bounce buffer pool due to limited DDR access
- * @m2_no_db: Host is not allowed to ring DB in M2 state
- */
-struct mhi_controller_config {
-	u32 max_channels;
-	u32 timeout_ms;
-	u32 buf_len;
-	u32 num_channels;
-	const struct mhi_channel_config *ch_cfg;
-	u32 num_events;
-	struct mhi_event_config *event_cfg;
-	bool use_bounce_buf;
-	bool m2_no_db;
-};
-
-/**
- * struct mhi_controller - Master MHI controller structure
- * @cntrl_dev: Pointer to the struct device of physical bus acting as the MHI
- *            controller (required)
- * @mhi_dev: MHI device instance for the controller
- * @debugfs_dentry: MHI controller debugfs directory
- * @regs: Base address of MHI MMIO register space (required)
+ * struct mhi_controller - Master controller structure for external modem
+ * @dev: Device associated with this controller
+ * @of_node: DT that has MHI configuration information
+ * @of_node_devices: DT that has MHI device node information
+ * @regs: Points to base of MHI MMIO register space
  * @bhi: Points to base of MHI BHI register space
  * @bhie: Points to base of MHI BHIe register space
  * @wake_db: MHI WAKE doorbell register address
- * @iova_start: IOMMU starting address for data (required)
- * @iova_stop: IOMMU stop address for data (required)
- * @fw_image: Firmware image name for normal booting (optional)
- * @edl_image: Firmware image name for emergency download mode (optional)
+ * @dev_id: PCIe device id of the external device
+ * @domain: PCIe domain the device connected to
+ * @bus: PCIe bus the device assigned to
+ * @slot: PCIe slot for the modem
+ * @iova_start: IOMMU starting address for data
+ * @iova_stop: IOMMU stop address for data
+ * @fw_image: Firmware image name for normal booting
+ * @edl_image: Firmware image name for emergency download mode
+ * @fbc_download: MHI host needs to do complete image transfer
  * @rddm_size: RAM dump size that host should allocate for debugging purpose
- * @sbl_size: SBL image size downloaded through BHIe (optional)
- * @seg_len: BHIe vector size (optional)
- * @reg_len: Length of the MHI MMIO region (required)
+ * @sbl_size: SBL image size
+ * @seg_len: BHIe vector size
  * @fbc_image: Points to firmware image buffer
  * @rddm_image: Points to RAM dump buffer
- * @mhi_chan: Points to the channel configuration table
+ * @max_chan: Maximum number of channels controller support
+ * @mhi_chan: Points to channel configuration table
  * @lpm_chans: List of channels that require LPM notifications
- * @irq: base irq # to request (required)
- * @max_chan: Maximum number of channels the controller supports
  * @total_ev_rings: Total # of event rings allocated
  * @hw_ev_rings: Number of hardware event rings
  * @sw_ev_rings: Number of software event rings
- * @nr_irqs: Number of IRQ allocated by bus master (required)
- * @family_number: MHI controller family number
- * @device_number: MHI controller device number
- * @major_version: MHI controller major revision number
- * @minor_version: MHI controller minor revision number
- * @serial_number: MHI controller serial number obtained from BHI
- * @oem_pk_hash: MHI controller OEM PK Hash obtained from BHI
+ * @msi_required: Number of msi required to operate
+ * @msi_allocated: Number of msi allocated by bus master
+ * @irq: base irq # to request
  * @mhi_event: MHI event ring configurations table
  * @mhi_cmd: MHI command ring configurations table
  * @mhi_ctxt: MHI device context, shared memory between host and device
- * @pm_mutex: Mutex for suspend/resume operation
- * @pm_lock: Lock for protecting MHI power management state
  * @timeout_ms: Timeout in ms for state transitions
- * @pm_state: MHI power management state
- * @db_access: DB access states
+ * @pm_state: Power management state
  * @ee: MHI device execution environment
- * @dev_state: MHI device state
- * @dev_wake: Device wakeup count
- * @pending_pkts: Pending packets for the controller
- * @M0, M2, M3: Counters to track number of device MHI state changes
- * @transition_list: List of MHI state transitions
- * @transition_lock: Lock for protecting MHI state transition list
- * @wlock: Lock for protecting device wakeup
- * @mhi_link_info: Device bandwidth info
- * @st_worker: State transition worker
- * @hiprio_wq: High priority workqueue for MHI work such as state transitions
- * @state_event: State change event
- * @status_cb: CB function to notify power states of the device (required)
- * @wake_get: CB function to assert device wake (optional)
- * @wake_put: CB function to de-assert device wake (optional)
- * @wake_toggle: CB function to assert and de-assert device wake (optional)
- * @runtime_get: CB function to controller runtime resume (required)
- * @runtime_put: CB function to decrement pm usage (required)
- * @map_single: CB function to create TRE buffer
- * @unmap_single: CB function to destroy TRE buffer
- * @read_reg: Read a MHI register via the physical link (required)
- * @write_reg: Write a MHI register via the physical link (required)
- * @reset: Controller specific reset function (optional)
- * @buffer_len: Bounce buffer length
- * @index: Index of the MHI controller instance
- * @bounce_buf: Use of bounce buffer
- * @fbc_download: MHI host needs to do complete image transfer (optional)
- * @wake_set: Device wakeup set flag
- * @irq_flags: irq flags passed to request_irq (optional)
- * @mru: the default MRU for the MHI device
- * @rddm_prealloc: Enable/Disable preallocation of RDDM buffer during init
- * @rddm_seg_len: Override rddm segment length if different from seg_len
- *
- * Fields marked as (required) need to be populated by the controller driver
- * before calling mhi_register_controller(). For the fields marked as (optional)
- * they can be populated depending on the usecase.
- *
- * The following fields are present for the purpose of implementing any device
- * specific quirks or customizations for specific MHI revisions used in device
- * by the controller drivers. The MHI stack will just populate these fields
- * during mhi_register_controller():
- *  family_number
- *  device_number
- *  major_version
- *  minor_version
+ * @dev_state: MHI STATE
+ * @mhi_link_info: requested link bandwidth by device
+ * @status_cb: CB function to notify various power states to but master
+ * @link_status: Query link status in case of abnormal value read from device
+ * @runtime_get: Async runtime resume function
+ * @runtimet_put: Release votes
+ * @time_get: Return host time in us
+ * @lpm_disable: Request controller to disable link level low power modes
+ * @lpm_enable: Controller may enable link level low power modes again
+ * @priv_data: Points to bus master's private data
+ * @force_re_enum: Force PCIe link re-enumeration to potentially bump up speed
  */
 struct mhi_controller {
-	struct device *cntrl_dev;
+	struct list_head node;
 	struct mhi_device *mhi_dev;
-	struct dentry *debugfs_dentry;
+
+	/* device node for iommu ops */
+	struct device *dev;
+	struct device_node *of_node;
+
+	/* device node for mhi devices*/
+	struct device_node *of_node_devices;
+
+	/* mmio base */
+	phys_addr_t base_addr;
 	void __iomem *regs;
 	void __iomem *bhi;
 	void __iomem *bhie;
 	void __iomem *wake_db;
+	void __iomem *tsync_db;
+	void __iomem *bw_scale_db;
 
-	dma_addr_t iova_start;
-	dma_addr_t iova_stop;
-	const char *fw_image;
-	const char *edl_image;
-	size_t rddm_size;
-	size_t sbl_size;
-	size_t seg_len;
-	size_t reg_len;
-	struct image_info *fbc_image;
-	struct image_info *rddm_image;
-	struct mhi_chan *mhi_chan;
-	struct list_head lpm_chans;
-	int *irq;
-	u32 max_chan;
-	u32 total_ev_rings;
-	u32 hw_ev_rings;
-	u32 sw_ev_rings;
-	u32 nr_irqs;
+	/* device topology */
+	u32 dev_id;
+	u32 domain;
+	u32 bus;
+	u32 slot;
 	u32 family_number;
 	u32 device_number;
 	u32 major_version;
 	u32 minor_version;
-	u32 serial_number;
-	u32 oem_pk_hash[MHI_MAX_OEM_PK_HASH_SEGMENTS];
 
+	/* addressing window */
+	dma_addr_t iova_start;
+	dma_addr_t iova_stop;
+
+	/* fw images */
+	const char *fw_image;
+	const char *fw_image_fallback;
+	const char *edl_image;
+
+	/* mhi host manages downloading entire fbc images */
+	bool fbc_download;
+	size_t rddm_size;
+	size_t sbl_size;
+	size_t seg_len;
+	u32 session_id;
+	u32 sequence_id;
+	struct image_info *fbc_image;
+	struct image_info *rddm_image;
+
+	/* physical channel config data */
+	u32 max_chan;
+	struct mhi_chan *mhi_chan;
+	struct list_head lpm_chans; /* these chan require lpm notification */
+
+	/* physical event config data */
+	u32 total_ev_rings;
+	u32 hw_ev_rings;
+	u32 sw_ev_rings;
+	u32 msi_required;
+	u32 msi_allocated;
+	int *irq; /* interrupt table */
 	struct mhi_event *mhi_event;
+	struct list_head sp_ev_rings; /* special purpose event rings */
+
+	/* cmd rings */
 	struct mhi_cmd *mhi_cmd;
+
+	/* mhi context (shared with device) */
 	struct mhi_ctxt *mhi_ctxt;
 
-	struct mutex pm_mutex;
-	rwlock_t pm_lock;
 	u32 timeout_ms;
+	u32 m2_timeout_ms; /* wait time for host to continue suspend after m2 */
+
+	/* caller should grab pm_mutex for suspend/resume operations */
+	struct mutex pm_mutex;
+	struct mutex tsync_mutex;
+	bool pre_init;
+	rwlock_t pm_lock;
 	u32 pm_state;
-	u32 db_access;
-	enum mhi_ee_type ee;
-	enum mhi_state dev_state;
+	u32 saved_pm_state; /* saved state during fast suspend */
+	u32 db_access; /* db access only on these states */
+	enum mhi_ee ee;
+	u32 ee_table[MHI_EE_MAX]; /* ee conversion from dev to host */
+	enum mhi_dev_state dev_state;
+	enum mhi_dev_state saved_dev_state;
+	bool wake_set;
 	atomic_t dev_wake;
+	atomic_t alloc_size;
 	atomic_t pending_pkts;
-	u32 M0, M2, M3;
 	struct list_head transition_list;
 	spinlock_t transition_lock;
 	spinlock_t wlock;
+
+	/* target bandwidth info */
 	struct mhi_link_info mhi_link_info;
+
+	/* debug counters */
+	u32 M0, M2, M3, M3_FAST;
+
+	/* worker for different state transitions */
 	struct work_struct st_worker;
-	struct workqueue_struct *hiprio_wq;
+	struct work_struct special_work;
+	struct workqueue_struct *special_wq;
+
 	wait_queue_head_t state_event;
 
-	void (*status_cb)(struct mhi_controller *mhi_cntrl,
-			  enum mhi_callback cb);
-	void (*wake_get)(struct mhi_controller *mhi_cntrl, bool override);
-	void (*wake_put)(struct mhi_controller *mhi_cntrl, bool override);
+	/* shadow functions */
+	void (*status_cb)(struct mhi_controller *, void *, enum MHI_CB);
+	int (*link_status)(struct mhi_controller *, void *);
+	void (*wake_get)(struct mhi_controller *, bool);
+	void (*wake_put)(struct mhi_controller *, bool);
 	void (*wake_toggle)(struct mhi_controller *mhi_cntrl);
-	int (*runtime_get)(struct mhi_controller *mhi_cntrl);
-	void (*runtime_put)(struct mhi_controller *mhi_cntrl);
+	int (*runtime_get)(struct mhi_controller *, void *);
+	void (*runtime_put)(struct mhi_controller *, void *);
+	u64 (*time_get)(struct mhi_controller *mhi_cntrl, void *priv);
+	int (*lpm_disable)(struct mhi_controller *mhi_cntrl, void *priv);
+	int (*lpm_enable)(struct mhi_controller *mhi_cntrl, void *priv);
 	int (*map_single)(struct mhi_controller *mhi_cntrl,
 			  struct mhi_buf_info *buf);
 	void (*unmap_single)(struct mhi_controller *mhi_cntrl,
 			     struct mhi_buf_info *buf);
-	int (*read_reg)(struct mhi_controller *mhi_cntrl, void __iomem *addr,
-			u32 *out);
-	void (*write_reg)(struct mhi_controller *mhi_cntrl, void __iomem *addr,
-			  u32 val);
-	void (*reset)(struct mhi_controller *mhi_cntrl);
+	void (*tsync_log)(struct mhi_controller *mhi_cntrl, u64 remote_time);
+	int (*bw_scale)(struct mhi_controller *mhi_cntrl,
+			struct mhi_link_info *link_info);
+	void (*write_reg)(struct mhi_controller *mhi_cntrl, void __iomem *base,
+			u32 offset, u32 val);
 
-	size_t buffer_len;
-	int index;
+	/* channel to control DTR messaging */
+	struct mhi_device *dtr_dev;
+
+	/* bounce buffer settings */
 	bool bounce_buf;
-	bool fbc_download;
-	bool wake_set;
-	unsigned long irq_flags;
-	u32 mru;
-	void *license_buf;
-	dma_addr_t license_dma_addr;
-	size_t license_buf_size;
-	void *nonce_buf;
-	dma_addr_t nonce_dma_addr;
-	bool rddm_prealloc;
-	u32 rddm_seg_len;
-	u8 *bootargs_buf;
-	dma_addr_t bootargs_dma;
+	size_t buffer_len;
+
+	/* supports time sync feature */
+	struct mhi_timesync *mhi_tsync;
+	u64 local_timer_freq;
+	u64 remote_timer_freq;
+
+	/* subsytem failure reason retrieval feature */
+	struct mhi_sfr_info *mhi_sfr;
+	size_t sfr_len;
+
+	/* kernel log level */
+	enum MHI_DEBUG_LEVEL klog_lvl;
+
+	/* private log level controller driver to set */
+	enum MHI_DEBUG_LEVEL log_lvl;
+
+	/* controller specific data */
+	const char *name;
+	bool power_down;
+	bool initiate_mhi_reset;
+	void *priv_data;
+	void *log_buf;
+	void *cntrl_log_buf;
+	struct dentry *dentry;
+	struct dentry *parent;
+
+	bool mhi_removed;
 };
 
 /**
- * struct mhi_device - Structure representing an MHI device which binds
- *                     to channels or is associated with controllers
- * @id: Pointer to MHI device ID struct
- * @name: Name of the associated MHI device
- * @mhi_cntrl: Controller the device belongs to
- * @ul_chan: UL channel for the device
- * @dl_chan: DL channel for the device
- * @dev: Driver model device node for the MHI device
- * @dev_type: MHI device type
+ * struct mhi_device - mhi device structure associated bind to channel
+ * @dev: Device associated with the channels
+ * @mtu: Maximum # of bytes controller support
  * @ul_chan_id: MHI channel id for UL transfer
  * @dl_chan_id: MHI channel id for DL transfer
- * @dev_wake: Device wakeup counter
+ * @tiocm: Device current terminal settings
+ * @early_notif: This device needs an early notification in case of error
+ * with external modem.
+ * @dev_vote: Keep external device in active state
+ * @bus_vote: Keep physical bus (pci, spi) in active state
+ * @priv: Driver private data
  */
 struct mhi_device {
+	struct device dev;
+	u32 dev_id;
+	u32 domain;
+	u32 bus;
+	u32 slot;
+	size_t mtu;
+	int ul_chan_id;
+	int dl_chan_id;
+	int ul_event_id;
+	int dl_event_id;
+	u32 tiocm;
+	bool early_notif;
 	const struct mhi_device_id *id;
-	const char *name;
+	const char *chan_name;
 	struct mhi_controller *mhi_cntrl;
 	struct mhi_chan *ul_chan;
 	struct mhi_chan *dl_chan;
-	struct device dev;
+	atomic_t dev_vote;
+	atomic_t bus_vote;
 	enum mhi_device_type dev_type;
-	int ul_chan_id;
-	int dl_chan_id;
-	u32 dev_wake;
-	size_t mtu;
+	void *priv_data;
+	int (*ul_xfer)(struct mhi_device *, struct mhi_chan *, void *,
+		       size_t, enum MHI_FLAGS);
+	int (*dl_xfer)(struct mhi_device *, struct mhi_chan *, void *,
+		       size_t, enum MHI_FLAGS);
+	int (*ul_n_xfer)(struct mhi_device *, struct mhi_chan *, void **,
+			size_t *, enum MHI_FLAGS *, dma_addr_t *,
+			unsigned int);
+	int (*dl_n_xfer)(struct mhi_device *, struct mhi_chan *, void **,
+			size_t *, enum MHI_FLAGS *, dma_addr_t *,
+			unsigned int);
+	int (*ul_skb_xfer)(struct mhi_device *mhi_dev, struct mhi_chan *chan,
+				void *skb, size_t len, enum MHI_FLAGS flags);
+	void (*status_cb)(struct mhi_device *, enum MHI_CB);
 };
 
 /**
  * struct mhi_result - Completed buffer information
  * @buf_addr: Address of data buffer
- * @bytes_xferd: # of bytes transferred
  * @dir: Channel direction
- * @transaction_status: Status of last transaction
+ * @bytes_xfer: # of bytes transferred
+ * @transaction_status: Status of last trasnferred
+ * @buf_indirect:
+ *            true  - in-direct (such as skb)
+ *	      false - direct where buf_addr is pointing to buffer address
+ *            Some client may need to support both types
  */
 struct mhi_result {
 	void *buf_addr;
-	size_t bytes_xferd;
 	enum dma_data_direction dir;
+	size_t bytes_xferd;
 	int transaction_status;
+	bool buf_indirect;
 };
 
 /**
- * struct mhi_buf - MHI Buffer description
- * @buf: Virtual address of the buffer
- * @name: Buffer label. For offload channel, configurations name must be:
- *        ECA - Event context array data
- *        CCA - Channel context array data
- * @dma_addr: IOMMU address of the buffer
+ * struct mhi_buf - Describes the buffer
+ * @page: buffer as a page
+ * @buf: cpu address for the buffer
+ * @phys_addr: physical address of the buffer
+ * @dma_addr: iommu address for the buffer
+ * @skb: skb of ip packet
  * @len: # of bytes
+ * @name: Buffer label, for offload channel configurations name must be:
+ * ECA - Event context array data
+ * CCA - Channel context array data
  */
 struct mhi_buf {
-	void *buf;
-	const char *name;
-	dma_addr_t dma_addr;
-	size_t len;
+	struct list_head node;
 	struct page *page;
+	void *buf;
+	phys_addr_t phys_addr;
+	dma_addr_t dma_addr;
+	struct sk_buff *skb;
+	size_t len;
+	const char *name; /* ECA, CCA */
 };
 
 /**
- * struct mhi_driver - Structure representing a MHI client driver
- * @probe: CB function for client driver probe function
- * @remove: CB function for client driver remove function
- * @ul_xfer_cb: CB function for UL data transfer
- * @dl_xfer_cb: CB function for DL data transfer
- * @status_cb: CB functions for asynchronous status
- * @driver: Device driver model driver
+ * struct mhi_driver - mhi driver information
+ * @id_table: NULL terminated channel ID names
+ * @ul_xfer_cb: UL data transfer callback
+ * @dl_xfer_cb: DL data transfer callback
+ * @status_cb: Asynchronous status callback
  */
 struct mhi_driver {
 	const struct mhi_device_id *id_table;
-	int (*probe)(struct mhi_device *mhi_dev,
-		     const struct mhi_device_id *id);
-	void (*remove)(struct mhi_device *mhi_dev);
-	void (*ul_xfer_cb)(struct mhi_device *mhi_dev,
-			   struct mhi_result *result);
-	void (*dl_xfer_cb)(struct mhi_device *mhi_dev,
-			   struct mhi_result *result);
-	void (*status_cb)(struct mhi_device *mhi_dev, enum mhi_callback mhi_cb);
+	int (*probe)(struct mhi_device *, const struct mhi_device_id *id);
+	void (*remove)(struct mhi_device *);
+	void (*ul_xfer_cb)(struct mhi_device *, struct mhi_result *);
+	void (*dl_xfer_cb)(struct mhi_device *, struct mhi_result *);
+	void (*status_cb)(struct mhi_device *, enum MHI_CB mhi_cb);
 	struct device_driver driver;
 };
 
 #define to_mhi_driver(drv) container_of(drv, struct mhi_driver, driver)
 #define to_mhi_device(dev) container_of(dev, struct mhi_device, dev)
 
-/**
- * mhi_alloc_controller - Allocate the MHI Controller structure
- * Allocate the mhi_controller structure using zero initialized memory
- */
-struct mhi_controller *mhi_alloc_controller(void);
+static inline void mhi_device_set_devdata(struct mhi_device *mhi_dev,
+					  void *priv)
+{
+	mhi_dev->priv_data = priv;
+}
+
+static inline void *mhi_device_get_devdata(struct mhi_device *mhi_dev)
+{
+	return mhi_dev->priv_data;
+}
 
 /**
- * mhi_free_controller - Free the MHI Controller structure
- * Free the mhi_controller structure which was previously allocated
+ * mhi_queue_transfer - Queue a buffer to hardware
+ * All transfers are asyncronous transfers
+ * @mhi_dev: Device associated with the channels
+ * @dir: Data direction
+ * @buf: Data buffer (skb for hardware channels)
+ * @len: Size in bytes
+ * @mflags: Interrupt flags for the device
  */
-void mhi_free_controller(struct mhi_controller *mhi_cntrl);
+static inline int mhi_queue_transfer(struct mhi_device *mhi_dev,
+				     enum dma_data_direction dir,
+				     void *buf,
+				     size_t len,
+				     enum MHI_FLAGS mflags)
+{
+	if (dir == DMA_TO_DEVICE)
+		return mhi_dev->ul_xfer(mhi_dev, mhi_dev->ul_chan, buf, len,
+					mflags);
+	else
+		return mhi_dev->dl_xfer(mhi_dev, mhi_dev->dl_chan, buf, len,
+					mflags);
+}
+static inline int mhi_ul_skb_xfer(struct mhi_device *mhi_dev,
+		struct sk_buff *skb)
+{
+	if (!mhi_dev->ul_skb_xfer)
+		return -EIO;
+	return mhi_dev->ul_skb_xfer(mhi_dev, mhi_dev->ul_chan, skb,
+					skb->len, MHI_EOT);
+}
+
+static inline int mhi_queue_n_transfer(struct mhi_device *mhi_dev,
+				     enum dma_data_direction dir,
+				     void **buf_array,
+				     size_t *len_array,
+				     enum MHI_FLAGS *mflags_array,
+				     dma_addr_t *dma_addr_array,
+				     unsigned int num)
+{
+	if (dir == DMA_TO_DEVICE)
+		return mhi_dev->ul_n_xfer(mhi_dev, mhi_dev->ul_chan,
+				buf_array, len_array, mflags_array,
+				dma_addr_array, num);
+	else
+		return mhi_dev->dl_n_xfer(mhi_dev, mhi_dev->dl_chan,
+				buf_array, len_array, mflags_array,
+				dma_addr_array, num);
+}
+
+static inline void *mhi_controller_get_devdata(struct mhi_controller *mhi_cntrl)
+{
+	return mhi_cntrl->priv_data;
+}
+
+static inline void mhi_free_controller(struct mhi_controller *mhi_cntrl)
+{
+	kfree(mhi_cntrl);
+}
 
 /**
- * mhi_register_controller - Register MHI controller
- * @mhi_cntrl: MHI controller to register
- * @config: Configuration to use for the controller
+ * mhi_driver_register - Register driver with MHI framework
+ * @mhi_drv: mhi_driver structure
  */
-int mhi_register_controller(struct mhi_controller *mhi_cntrl,
-			const struct mhi_controller_config *config);
-
-/**
- * mhi_unregister_controller - Unregister MHI controller
- * @mhi_cntrl: MHI controller to unregister
- */
-void mhi_unregister_controller(struct mhi_controller *mhi_cntrl);
-
-/*
- * module_mhi_driver() - Helper macro for drivers that don't do
- * anything special other than using default mhi_driver_register() and
- * mhi_driver_unregister().  This eliminates a lot of boilerplate.
- * Each module may only use this macro once.
- */
-#define module_mhi_driver(mhi_drv) \
-	module_driver(mhi_drv, mhi_driver_register, \
-		      mhi_driver_unregister)
-
-/*
- * Macro to avoid include chaining to get THIS_MODULE
- */
-#define mhi_driver_register(mhi_drv) \
-	__mhi_driver_register(mhi_drv, THIS_MODULE)
-
-/**
- * __mhi_driver_register - Register driver with MHI framework
- * @mhi_drv: Driver associated with the device
- * @owner: The module owner
- */
-int __mhi_driver_register(struct mhi_driver *mhi_drv, struct module *owner);
+int mhi_driver_register(struct mhi_driver *mhi_drv);
 
 /**
  * mhi_driver_unregister - Unregister a driver for mhi_devices
- * @mhi_drv: Driver associated with the device
+ * @mhi_drv: mhi_driver structure
  */
 void mhi_driver_unregister(struct mhi_driver *mhi_drv);
 
 /**
- * mhi_set_mhi_state - Set MHI device state
- * @mhi_cntrl: MHI controller
- * @state: State to set
+ * mhi_device_configure - configure ECA or CCA context
+ * For offload channels that client manage, call this
+ * function to configure channel context or event context
+ * array associated with the channel
+ * @mhi_div: Device associated with the channels
+ * @dir: Direction of the channel
+ * @mhi_buf: Configuration data
+ * @elements: # of configuration elements
  */
-void mhi_set_mhi_state(struct mhi_controller *mhi_cntrl,
-		       enum mhi_state state);
+int mhi_device_configure(struct mhi_device *mhi_div,
+			 enum dma_data_direction dir,
+			 struct mhi_buf *mhi_buf,
+			 int elements);
 
 /**
- * mhi_notify - Notify the MHI client driver about client device status
- * @mhi_dev: MHI device instance
- * @cb_reason: MHI callback reason
+ * mhi_device_get - disable low power modes
+ * Only disables lpm, does not immediately exit low power mode
+ * if controller already in a low power mode
+ * @mhi_dev: Device associated with the channels
+ * @vote: requested vote (bus, device or both)
  */
-void mhi_notify(struct mhi_device *mhi_dev, enum mhi_callback cb_reason);
+void mhi_device_get(struct mhi_device *mhi_dev, int vote);
 
 /**
- * mhi_get_free_desc_count - Get transfer ring length
+ * mhi_device_get_sync - disable low power modes
+ * Synchronously disable device & or bus low power, exit low power mode if
+ * controller already in a low power state
+ * @mhi_dev: Device associated with the channels
+ * @vote: requested vote (bus, device or both)
+ */
+int mhi_device_get_sync(struct mhi_device *mhi_dev, int vote);
+
+/**
+ * mhi_device_get_sync_atomic - Asserts device_wait and moves device to M0
+ * @mhi_dev: Device associated with the channels
+ * @timeout_us: timeout, in micro-seconds
+ *
+ * The device_wake is asserted to keep device in M0 or bring it to M0.
+ * If device is not in M0 state, then this function will wait for device to
+ * move to M0, until @timeout_us elapses.
+ * However, if device's M1 state-change event races with this function
+ * then there is a possiblity of device moving from M0 to M2 and back
+ * to M0. That can't be avoided as host must transition device from M1 to M2
+ * as per the spec.
+ * Clients can ignore that transition after this function returns as the device
+ * is expected to immediately  move from M2 to M0 as wake is asserted and
+ * wouldn't enter low power state.
+ *
+ * Returns:
+ * 0 if operation was successful (however, M0 -> M2 -> M0 is possible later) as
+ * mentioned above.
+ * -ETIMEDOUT is device faled to move to M0 before @timeout_us elapsed
+ * -EIO if the MHI state is one of the ERROR states.
+ */
+int mhi_device_get_sync_atomic(struct mhi_device *mhi_dev, int timeout_us);
+
+/**
+ * mhi_device_put - re-enable low power modes
+ * @mhi_dev: Device associated with the channels
+ * @vote: vote to remove
+ */
+void mhi_device_put(struct mhi_device *mhi_dev, int vote);
+
+/**
+ * mhi_prepare_for_transfer - setup channel for data transfer
+ * Moves both UL and DL channel from RESET to START state
+ * @mhi_dev: Device associated with the channels
+ */
+int mhi_prepare_for_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_unprepare_from_transfer -unprepare the channels
+ * Moves both UL and DL channels to RESET state
+ * @mhi_dev: Device associated with the channels
+ */
+void mhi_unprepare_from_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_pause_transfer - Pause the current transfe
+ * Moves both UL and DL channels to STOP state to halt
+ * pending transfers.
+ * @mhi_dev: Device associated with the channels
+ */
+int mhi_pause_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_resume_transfer - resume current transfer
+ * Moves both UL and DL channels to START state to
+ * resume transfer.
+ * @mhi_dev: Device associated with the channels
+ */
+int mhi_resume_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_get_no_free_descriptors - Get transfer ring length
  * Get # of TD available to queue buffers
  * @mhi_dev: Device associated with the channels
  * @dir: Direction of the channel
  */
-int mhi_get_free_desc_count(struct mhi_device *mhi_dev,
+int mhi_get_no_free_descriptors(struct mhi_device *mhi_dev,
 				enum dma_data_direction dir);
 
 /**
- * mhi_prepare_for_power_up - Do pre-initialization before power up.
- *                            This is optional, call this before power up if
- *                            the controller does not want bus framework to
- *                            automatically free any allocated memory during
- *                            shutdown process.
+ * mhi_get_total_descriptors - Get transfer ring length
+ * Get total # of TD  to queue buffers
+ * @mhi_dev: Device associated with the channels
+ * @dir: Direction of the channel
+ */
+int mhi_get_total_descriptors(struct mhi_device *mhi_dev,
+				enum dma_data_direction dir);
+
+/**
+ * mhi_poll - poll for any available data to consume
+ * This is only applicable for DL direction
+ * @mhi_dev: Device associated with the channels
+ * @budget: In descriptors to service before returning
+ */
+int mhi_poll(struct mhi_device *mhi_dev, u32 budget);
+
+/**
+ * mhi_ioctl - user space IOCTL support for MHI channels
+ * Native support for setting  TIOCM
+ * @mhi_dev: Device associated with the channels
+ * @cmd: IOCTL cmd
+ * @arg: Optional parameter, iotcl cmd specific
+ */
+long mhi_ioctl(struct mhi_device *mhi_dev, unsigned int cmd, unsigned long arg);
+
+/**
+ * mhi_alloc_controller - Allocate mhi_controller structure
+ * Allocate controller structure and additional data for controller
+ * private data. You may get the private data pointer by calling
+ * mhi_controller_get_devdata
+ * @size: # of additional bytes to allocate
+ */
+struct mhi_controller *mhi_alloc_controller(size_t size);
+
+/**
+ * of_register_mhi_controller - Register MHI controller
+ * Registers MHI controller with MHI bus framework. DT must be supported
+ * @mhi_cntrl: MHI controller to register
+ */
+int of_register_mhi_controller(struct mhi_controller *mhi_cntrl);
+
+void mhi_unregister_mhi_controller(struct mhi_controller *mhi_cntrl);
+
+/**
+ * mhi_bdf_to_controller - Look up a registered controller
+ * Search for controller based on device identification
+ * @domain: RC domain of the device
+ * @bus: Bus device connected to
+ * @slot: Slot device assigned to
+ * @dev_id: Device Identification
+ */
+struct mhi_controller *mhi_bdf_to_controller(u32 domain, u32 bus, u32 slot,
+					     u32 dev_id);
+
+/**
+ * mhi_prepare_for_power_up - Do pre-initialization before power up
+ * This is optional, call this before power up if controller do not
+ * want bus framework to automatically free any allocated memory during shutdown
+ * process.
  * @mhi_cntrl: MHI controller
  */
 int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_async_power_up - Start MHI power up sequence
+ * mhi_async_power_up - Starts MHI power up sequence
  * @mhi_cntrl: MHI controller
  */
 int mhi_async_power_up(struct mhi_controller *mhi_cntrl);
-
-/**
- * mhi_sync_power_up - Start MHI power up sequence and wait till the device
- *                     enters valid EE state
- * @mhi_cntrl: MHI controller
- */
 int mhi_sync_power_up(struct mhi_controller *mhi_cntrl);
 
 /**
  * mhi_power_down - Start MHI power down sequence
  * @mhi_cntrl: MHI controller
- * @graceful: Link is still accessible, so do a graceful shutdown process
+ * @graceful: link is still accessible, do a graceful shutdown process otherwise
+ * we will shutdown host w/o putting device into RESET state
  */
 void mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful);
 
 /**
- * mhi_unprepare_after_power_down - Free any allocated memory after power down
+ * mhi_unprepare_after_powre_down - free any allocated memory for power up
  * @mhi_cntrl: MHI controller
  */
 void mhi_unprepare_after_power_down(struct mhi_controller *mhi_cntrl);
 
 /**
  * mhi_pm_suspend - Move MHI into a suspended state
+ * Transition to MHI state M3 state from M0||M1||M2 state
  * @mhi_cntrl: MHI controller
  */
 int mhi_pm_suspend(struct mhi_controller *mhi_cntrl);
 
 /**
+ * mhi_pm_fast_suspend - Move host into suspend state while keeping
+ * the device in active state.
+ * @mhi_cntrl: MHI controller
+ * @notify_client: if true, clients will get a notification about lpm transition
+ */
+int mhi_pm_fast_suspend(struct mhi_controller *mhi_cntrl, bool notify_client);
+
+/**
  * mhi_pm_resume - Resume MHI from suspended state
+ * Transition to MHI state M0 state from M3 state
  * @mhi_cntrl: MHI controller
  */
 int mhi_pm_resume(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_pm_resume_force - Force resume MHI from suspended state
+ * mhi_pm_fast_resume - Move host into resume state from fast suspend state
  * @mhi_cntrl: MHI controller
- *
- * Resume the device irrespective of its MHI state. As per the MHI spec, devices
- * has to be in M3 state during resume. But some devices seem to be in a
- * different MHI state other than M3 but they continue working fine if allowed.
- * This API is intented to be used for such devices.
- *
- * Return: 0 if the resume succeeds, a negative error code otherwise
+ * @notify_client: if true, clients will get a notification about lpm transition
  */
-int mhi_pm_resume_force(struct mhi_controller *mhi_cntrl);
+int mhi_pm_fast_resume(struct mhi_controller *mhi_cntrl, bool notify_client);
 
 /**
- * mhi_download_rddm_image - Download ramdump image from device for
- *                           debugging purpose.
+ * mhi_download_rddm_img - Download ramdump image from device for
+ * debugging purpose.
  * @mhi_cntrl: MHI controller
- * @in_panic: Download rddm image during kernel panic
+ * @in_panic: If we trying to capture image while in kernel panic
  */
-int mhi_download_rddm_image(struct mhi_controller *mhi_cntrl, bool in_panic);
+int mhi_download_rddm_img(struct mhi_controller *mhi_cntrl, bool in_panic);
 
 /**
- * mhi_force_rddm_mode - Force device into rddm mode
+ * mhi_force_rddm_mode - Force external device into rddm mode
+ * to collect device ramdump. This is useful if host driver assert
+ * and we need to see device state as well.
  * @mhi_cntrl: MHI controller
  */
 int mhi_force_rddm_mode(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_get_exec_env - Get BHI execution environment of the device
+ * mhi_dump_sfr - Print SFR string from RDDM table.
  * @mhi_cntrl: MHI controller
  */
-enum mhi_ee_type mhi_get_exec_env(struct mhi_controller *mhi_cntrl);
+void mhi_dump_sfr(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_get_mhi_state - Get MHI state of the device
+ * mhi_get_remote_time - Get external modem time relative to host time
+ * Trigger event to capture modem time, also capture host time so client
+ * can do a relative drift comparision.
+ * Recommended only tsync device calls this method and do not call this
+ * from atomic context
+ * @mhi_dev: Device associated with the channels
+ * @sequence:unique sequence id track event
+ * @cb_func: callback function to call back
+ */
+int mhi_get_remote_time(struct mhi_device *mhi_dev,
+			u32 sequence,
+			void (*cb_func)(struct mhi_device *mhi_dev,
+					u32 sequence,
+					u64 local_time,
+					u64 remote_time));
+
+/**
+ * mhi_get_remote_time_sync - Get external soc time relative to local soc time
+ * using MMIO method.
+ * @mhi_dev: Device associated with the channels
+ * @t_host: Pointer to output local soc time
+ * @t_dev: Pointer to output remote soc time
+ */
+int mhi_get_remote_time_sync(struct mhi_device *mhi_dev,
+			     u64 *t_host,
+			     u64 *t_dev);
+
+/**
+ * mhi_get_mhi_state - Return MHI state of device
  * @mhi_cntrl: MHI controller
  */
-enum mhi_state mhi_get_mhi_state(struct mhi_controller *mhi_cntrl);
+enum mhi_dev_state mhi_get_mhi_state(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_soc_reset - Trigger a device reset. This can be used as a last resort
- *		   to reset and recover a device.
+ * mhi_set_mhi_state - Set device state
+ * @mhi_cntrl: MHI controller
+ * @state: state to set
+ */
+void mhi_set_mhi_state(struct mhi_controller *mhi_cntrl,
+		       enum mhi_dev_state state);
+
+
+/**
+ * mhi_is_active - helper function to determine if MHI in active state
+ * @mhi_dev: client device
+ */
+static inline bool mhi_is_active(struct mhi_device *mhi_dev)
+{
+	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
+
+	return (mhi_cntrl->dev_state >= MHI_STATE_M0 &&
+		mhi_cntrl->dev_state <= MHI_STATE_M3_FAST);
+}
+
+/**
+ * mhi_control_error - MHI controller went into unrecoverable error state.
+ * Will transition MHI into Linkdown state. Do not call from atomic
+ * context.
  * @mhi_cntrl: MHI controller
  */
-void mhi_soc_reset(struct mhi_controller *mhi_cntrl);
-
-/**
- * mhi_device_get - Disable device low power mode
- * @mhi_dev: Device associated with the channel
- */
-void mhi_device_get(struct mhi_device *mhi_dev);
-
-/**
- * mhi_device_get_sync - Disable device low power mode. Synchronously
- *                       take the controller out of suspended state
- * @mhi_dev: Device associated with the channel
- */
-int mhi_device_get_sync(struct mhi_device *mhi_dev);
-
-/**
- * mhi_device_put - Re-enable device low power mode
- * @mhi_dev: Device associated with the channel
- */
-void mhi_device_put(struct mhi_device *mhi_dev);
-
-/**
- * mhi_prepare_for_transfer - Setup UL and DL channels for data transfer.
- * @mhi_dev: Device associated with the channels
- *
- * Allocate and initialize the channel context and also issue the START channel
- * command to both channels. Channels can be started only if both host and
- * device execution environments match and channels are in a DISABLED state.
- */
-int mhi_prepare_for_transfer(struct mhi_device *mhi_dev);
-
-/**
- * mhi_prepare_for_transfer_autoqueue - Setup UL and DL channels with auto queue
- *                                      buffers for DL traffic
- * @mhi_dev: Device associated with the channels
- *
- * Allocate and initialize the channel context and also issue the START channel
- * command to both channels. Channels can be started only if both host and
- * device execution environments match and channels are in a DISABLED state.
- * The MHI core will automatically allocate and queue buffers for the DL traffic.
- */
-int mhi_prepare_for_transfer_autoqueue(struct mhi_device *mhi_dev);
-
-/**
- * mhi_unprepare_from_transfer - Reset UL and DL channels for data transfer.
- *                               Issue the RESET channel command and let the
- *                               device clean-up the context so no incoming
- *                               transfers are seen on the host. Free memory
- *                               associated with the context on host. If device
- *                               is unresponsive, only perform a host side
- *                               clean-up. Channels can be reset only if both
- *                               host and device execution environments match
- *                               and channels are in an ENABLED, STOPPED or
- *                               SUSPENDED state.
- * @mhi_dev: Device associated with the channels
- */
-void mhi_unprepare_from_transfer(struct mhi_device *mhi_dev);
-
-/**
- * mhi_poll - Poll for any available data in DL direction
- * @mhi_dev: Device associated with the channels
- * @budget: # of events to process
- */
-int mhi_poll(struct mhi_device *mhi_dev, u32 budget);
-
-/**
- * mhi_queue_dma - Send or receive DMA mapped buffers from client device
- *                 over MHI channel
- * @mhi_dev: Device associated with the channels
- * @dir: DMA direction for the channel
- * @mhi_buf: Buffer for holding the DMA mapped data
- * @len: Buffer length
- * @mflags: MHI transfer flags used for the transfer
- */
-int mhi_queue_dma(struct mhi_device *mhi_dev, enum dma_data_direction dir,
-		  struct mhi_buf *mhi_buf, size_t len, enum mhi_flags mflags);
-
-/**
- * mhi_queue_buf - Send or receive raw buffers from client device over MHI
- *                 channel
- * @mhi_dev: Device associated with the channels
- * @dir: DMA direction for the channel
- * @buf: Buffer for holding the data
- * @len: Buffer length
- * @mflags: MHI transfer flags used for the transfer
- */
-int mhi_queue_buf(struct mhi_device *mhi_dev, enum dma_data_direction dir,
-		  void *buf, size_t len, enum mhi_flags mflags);
-
-/**
- * mhi_queue_skb - Send or receive SKBs from client device over MHI channel
- * @mhi_dev: Device associated with the channels
- * @dir: DMA direction for the channel
- * @skb: Buffer for holding SKBs
- * @len: Buffer length
- * @mflags: MHI transfer flags used for the transfer
- */
-int mhi_queue_skb(struct mhi_device *mhi_dev, enum dma_data_direction dir,
-		  struct sk_buff *skb, size_t len, enum mhi_flags mflags);
-
-/**
- * mhi_queue_is_full - Determine whether queueing new elements is possible
- * @mhi_dev: Device associated with the channels
- * @dir: DMA direction for the channel
- */
-bool mhi_queue_is_full(struct mhi_device *mhi_dev, enum dma_data_direction dir);
-
-/**
- * mhi_dump_errdbg_reg - Dump error debug registers
- * @mhi_cntrl: MHI controller
- */
-void mhi_dump_errdbg_reg(struct mhi_controller *mhi_cntrl);
+void mhi_control_error(struct mhi_controller *mhi_cntrl);
 
 /**
  * mhi_debug_reg_dump - dump MHI registers for debug purpose
@@ -840,10 +937,42 @@ void mhi_dump_errdbg_reg(struct mhi_controller *mhi_cntrl);
 void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl);
 
 /**
- * mhi_scan_rddm_cookie - Look for supplied cookie value in the BHI debug
- * registers set by device to indicate rddm readiness for debugging purposes.
- * @mhi_cntrl: MHI controller
- * @cookie: cookie/pattern value to match
+ * mhi_get_restart_reason - retrieve the subsystem failure reason
+ * @name: controller name
  */
-bool mhi_scan_rddm_cookie(struct mhi_controller *mhi_cntrl, u32 cookie);
+char *mhi_get_restart_reason(const char *name);
+
+#ifdef CONFIG_MHI_DEBUG
+
+#define MHI_VERB(fmt, ...) do { \
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_VERBOSE) \
+			pr_debug("[D][%s] " fmt, __func__, ##__VA_ARGS__);\
+} while (0)
+
+#else
+
+#define MHI_VERB(fmt, ...)
+
+#endif
+
+#define MHI_CNTRL_LOG(fmt, ...) do {	\
+			pr_info("[I][%s] " fmt, __func__, ##__VA_ARGS__);\
+} while (0)
+
+#define MHI_CNTRL_ERR(fmt, ...) do {	\
+			pr_err("[E][%s] " fmt, __func__, ##__VA_ARGS__); \
+} while (0)
+
+#define MHI_LOG(fmt, ...) do {	\
+			pr_info("[I][%s] " fmt, __func__, ##__VA_ARGS__);\
+} while (0)
+
+#define MHI_ERR(fmt, ...) do {	\
+			pr_err("[E][%s] " fmt, __func__, ##__VA_ARGS__); \
+} while (0)
+
+#define MHI_CRITICAL(fmt, ...) do { \
+			pr_alert("[C][%s] " fmt, __func__, ##__VA_ARGS__); \
+} while (0)
+
 #endif /* _MHI_H_ */

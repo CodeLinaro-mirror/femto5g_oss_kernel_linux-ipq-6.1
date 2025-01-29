@@ -1,0 +1,5 @@
+drivers/bus/mhi/core/mhi_init.ko
+drivers/bus/mhi/core/mhi_main.ko
+drivers/bus/mhi/core/mhi_pm.ko
+drivers/bus/mhi/core/mhi_boot.ko
+drivers/bus/mhi/core/mhi_dtr.ko
