@@ -5,6 +5,7 @@
 
 menu "Character devices"
 
+source "drivers/char/fsm-dp/Kconfig"
 source "drivers/tty/Kconfig"
 
 config TTY_PRINTK
