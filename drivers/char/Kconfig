@@ -412,6 +412,7 @@ source "drivers/s390/char/Kconfig"
 
 source "drivers/char/xillybus/Kconfig"
 source "drivers/char/fsm-tti-intr/Kconfig"
+source "drivers/char/fsm-oru-forwarder/Kconfig"
 
 config ADI
 	tristate "SPARC Privileged ADI driver"
