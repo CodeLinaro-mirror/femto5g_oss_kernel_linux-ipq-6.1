@@ -1,0 +1,7 @@
+menuconfig FSM_DP
+	tristate "FSM DP Interface Core"
+	depends on MHI_BUS
+	default y
+	help
+	  FSM DP driver interface. The FSM DP character driver
+	  provides a datapath server to user space.
