@@ -25,7 +25,6 @@ void *fsm_dp_ipc_log = NULL;
 fsm_log_level_t fsm_dp_log_level = FSM_LOG_LEVEL_INFO;
 
 #define DEFAULT_LOOPBACK_JOB_NUM 8192
-#define FSM_DP_NAPI_WEIGHT 64
 static struct fsm_dp_drv *fsm_dp_pdrv;
 struct fsm_dp_kernel_register_db_entry fsm_dp_reg_db[FSM_DP_NUM_MSG_TYPE];
 
