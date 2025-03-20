@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2015, Sony Mobile Communications Inc.
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/kthread.h>
 #include <linux/module.h>
@@ -526,7 +527,7 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 			qrtr_buffer_log_tx(node, hdr, skb);
 			rc = node->ep->xmit(node->ep, skb);
 			if (rc)
-				pr_err("%s : Error in xmit : ret = %d\n",
+				pr_err_once("%s : Error in xmit : ret = %d\n",
 				       __func__, rc);
 		} else {
 			kfree_skb(skb);
