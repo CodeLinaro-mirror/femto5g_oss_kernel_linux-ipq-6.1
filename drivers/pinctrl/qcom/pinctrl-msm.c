@@ -1206,15 +1206,8 @@ static int msm_gpio_irq_set_affinity(struct irq_data *d,
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
 
-#if 1
-	if (d->parent_data && test_bit(d->hwirq, pctrl->skip_wake_irqs))
-		return irq_chip_set_affinity_parent(d, dest, force);
-
-	return -EINVAL;
-#else
-	irq_set_affinity_hint(pctrl->irq, dest);
+	irq_force_affinity(pctrl->irq, dest);
 	return IRQ_SET_MASK_OK;
-#endif
 }
 
 static int msm_gpio_irq_set_vcpu_affinity(struct irq_data *d, void *vcpu_info)
