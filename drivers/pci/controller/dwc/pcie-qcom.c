@@ -4,6 +4,7 @@
  *
  * Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  * Copyright 2015 Linaro Limited.
+ * Copyright (c) 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Author: Stanimir Varbanov <svarbanov@mm-sol.com>
  */
@@ -31,6 +32,38 @@
 
 #include "../../pci.h"
 #include "pcie-designware.h"
+
+/* PARF registers */
+#define PARF_SYS_CTRL				0x00
+#define PARF_DB_CTRL				0x10
+#define PARF_PM_CTRL				0x20
+#define PARF_MHI_CLOCK_RESET_CTRL		0x174
+#define PARF_MHI_BASE_ADDR_LOWER		0x178
+#define PARF_MHI_BASE_ADDR_UPPER		0x17c
+#define PARF_DEBUG_INT_EN			0x190
+#define PARF_AXI_MSTR_RD_HALT_NO_WRITES		0x1a4
+#define PARF_AXI_MSTR_WR_ADDR_HALT		0x1a8
+#define PARF_Q2A_FLUSH				0x1ac
+#define PARF_LTSSM				0x1b0
+#define PARF_CFG_BITS				0x210
+#define PARF_INT_ALL_STATUS			0x224
+#define PARF_INT_ALL_CLEAR			0x228
+#define PARF_INT_ALL_MASK			0x22c
+#define PARF_SLV_ADDR_MSB_CTRL			0x2c0
+#define PARF_DBI_BASE_ADDR			0x350
+#define PARF_DBI_BASE_ADDR_HI			0x354
+#define PARF_SLV_ADDR_SPACE_SIZE		0x358
+#define PARF_SLV_ADDR_SPACE_SIZE_HI		0x35c
+#define PARF_ATU_BASE_ADDR			0x634
+#define PARF_ATU_BASE_ADDR_HI			0x638
+#define PARF_SRIS_MODE				0x644
+#define PARF_DEBUG_CNT_PM_LINKST_IN_L2		0xc04
+#define PARF_DEBUG_CNT_PM_LINKST_IN_L1		0xc0c
+#define PARF_DEBUG_CNT_PM_LINKST_IN_L0S		0xc10
+#define PARF_DEBUG_CNT_AUX_CLK_IN_L1SUB_L1	0xc84
+#define PARF_DEBUG_CNT_AUX_CLK_IN_L1SUB_L2	0xc88
+#define PARF_DEVICE_TYPE			0x1000
+#define PARF_BDF_TO_SID_CFG			0x2c00
 
 #define PCIE20_PARF_SYS_CTRL			0x00
 #define MST_WAKEUP_EN				BIT(13)
@@ -63,10 +96,17 @@
 #define PARF_INT_ALL_STATUS			0x224
 #define PARF_INT_ALL_CLEAR			0x228
 #define PARF_INT_ALL_MASK			0x22c
+#define PARF_STATUS				0x230
+
+/* PARF_STATUS fields */
+#define FLUSH_COMPLETED				BIT(9)
+#define SW_CLEAR_FLUSH_MODE			BIT(10)
+#define FLUSH_MODE				BIT(11)
 
 /* PARF_INT_ALL_{STATUS/CLEAR/MASK} register fields */
-#define PARF_INT_ALL_LINK_DOWN                  BIT(1)
-#define PARF_INT_ALL_LINK_UP                    BIT(13)
+#define PARF_INT_ALL_LINK_DOWN		BIT(1)
+#define PARF_INT_ALL_LINK_UP		BIT(13)
+#define PARF_INT_MSI_DEV_0_7		GENMASK(30, 23)
 
 /* Virtual Channel registers and fields */
 #define PCIE_TYPE0_VC_CAPABILITIES_REG_1 	0x14c
@@ -128,6 +168,8 @@
 #define DBI_RO_WR_EN				1
 
 #define PERST_DELAY_US				1000
+#define FLUSH_TIMEOUT_US			1000
+
 /* PARF registers */
 #define PCIE20_PARF_PCS_DEEMPH			0x34
 #define PCS_DEEMPH_TX_DEEMPH_GEN1(x)		((x) << 16)
@@ -266,6 +308,7 @@ union qcom_pcie_resources {
 };
 
 struct qcom_pcie;
+static struct pci_ops qcom_pcie_bridge_ops;
 
 struct qcom_pcie_ops {
 	int (*get_resources)(struct qcom_pcie *pcie);
@@ -328,19 +371,27 @@ static int qcom_pcie_start_link(struct dw_pcie *pci)
 static irqreturn_t qcom_pcie_global_irq_thread_fn(int irq, void *data)
 {
 	struct qcom_pcie *pcie = data;
-	u32 status, mask;
-
-	status = readl_relaxed(pcie->parf + PARF_INT_ALL_STATUS);
-	mask = readl_relaxed(pcie->parf + PARF_INT_ALL_MASK);
+	struct dw_pcie_rp *pp = &pcie->pci->pp;
+	struct device *dev = pcie->pci->dev;
+	u32 status = readl_relaxed(pcie->parf + PARF_INT_ALL_STATUS);
 
 	writel_relaxed(status, pcie->parf + PARF_INT_ALL_CLEAR);
 
-	status &= mask;
+	if (FIELD_GET(PARF_INT_ALL_LINK_UP, status)) {
+		dev_info(dev, "Received Link up event. Starting enumeration!\n");
 
-	if (status & PARF_INT_ALL_LINK_DOWN)
-		dev_info(pcie->pci->dev, "Received Link down event\n");
-	else if (status & PARF_INT_ALL_LINK_UP)
-		dev_info(pcie->pci->dev, "Received Link up event\n");
+		/* Rescan the bus to enumerate endpoint devices */
+		pci_lock_rescan_remove();
+		pci_rescan_bus(pp->bridge->bus);
+		pci_unlock_rescan_remove();
+
+	} else if (FIELD_GET(PARF_INT_ALL_LINK_DOWN, status)) {
+		dev_info(dev, "Received Link down event\n");
+		pci_host_bridge_handle_link_down(pp->bridge);
+
+	} else
+		dev_WARN_ONCE(dev, 1, "Received unknown event. INT_STATUS: 0x%08x\n",
+			      status);
 
 	return IRQ_HANDLED;
 }
@@ -1723,6 +1774,8 @@ static int qcom_pcie_host_init(struct dw_pcie_rp *pp)
 			goto err_assert_reset;
 	}
 
+	pp->bridge->ops = &qcom_pcie_bridge_ops;
+
 	return 0;
 
 err_assert_reset:
@@ -1868,6 +1921,75 @@ EXPORT_SYMBOL(pcie_parf_read);
 static const struct dw_pcie_host_ops qcom_pcie_dw_ops = {
 	.host_init	= qcom_pcie_host_init,
 	.host_deinit	= qcom_pcie_host_deinit,
+};
+
+static int qcom_pcie_retrain_link(struct pci_bus *bus)
+{
+	struct dw_pcie_rp *pp = bus->sysdata;
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct qcom_pcie *pcie = to_qcom_pcie(pci);
+	struct device *dev = pcie->pci->dev;
+	u32 val;
+	int ret;
+
+	/* Wait for the pending transactions to be completed */
+	ret = readl_relaxed_poll_timeout(pcie->parf + PARF_STATUS, val,
+					 val & FLUSH_COMPLETED, 10,
+					 FLUSH_TIMEOUT_US);
+	if (ret) {
+		dev_err(dev, "Flush completion failed: %d, value: %u\n", ret, val);
+		goto err_host_deinit;
+	}
+
+	/* Clear the FLUSH_MODE to allow the core to be reset */
+	val = readl(pcie->parf + PARF_LTSSM);
+	val |= SW_CLEAR_FLUSH_MODE;
+	writel(val, pcie->parf + PARF_LTSSM);
+
+	/* Wait for the FLUSH_MODE to clear */
+	ret = readl_relaxed_poll_timeout(pcie->parf + PARF_LTSSM, val,
+					 !(val & FLUSH_MODE), 10,
+					 FLUSH_TIMEOUT_US);
+	if (ret) {
+		dev_err(dev, "Flush mode clear failed: %d, value: %u\n", ret, val);
+		goto err_host_deinit;
+	}
+
+	qcom_pcie_host_deinit(pp);
+
+	ret = qcom_pcie_host_init(pp);
+	if (ret) {
+		dev_err(dev, "Host init failed\n");
+		return ret;
+	}
+
+	ret = dw_pcie_setup_rc(pp);
+	if (ret)
+		goto err_host_deinit;
+
+	/*
+	 * Re-enable global IRQ events as the PARF_INT_ALL_MASK register is
+	 * non-sticky.
+	 */
+	if (pcie->global_irq)
+		writel_relaxed(PARF_INT_ALL_LINK_UP | PARF_INT_ALL_LINK_DOWN |
+			       PARF_INT_MSI_DEV_0_7, pcie->parf + PARF_INT_ALL_MASK);
+
+	qcom_pcie_start_link(pci);
+
+	return 0;
+
+err_host_deinit:
+	qcom_pcie_host_deinit(pp);
+
+	return ret;
+}
+
+static struct pci_ops qcom_pcie_bridge_ops = {
+	.map_bus = dw_pcie_own_conf_map_bus,
+	.read = pci_generic_config_read,
+	.write = pci_generic_config_write,
+	.retrain_link = qcom_pcie_retrain_link,
 };
 
 /* Qcom IP rev.: 2.1.0	Synopsys IP rev.: 4.01a */
@@ -2136,12 +2258,17 @@ static int qcom_pcie_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "Unable to request global irq\n");
 			pm_runtime_disable(&pdev->dev);
-			goto err_phy_exit;
+			goto err_host_deinit;
 		}
+
+		writel_relaxed(PARF_INT_ALL_LINK_UP | PARF_INT_ALL_LINK_DOWN |
+			PARF_INT_MSI_DEV_0_7, pcie->parf + PARF_INT_ALL_MASK);
 	}
 
 	return 0;
 
+err_host_deinit:
+	dw_pcie_host_deinit(pp);
 err_phy_exit:
 	phy_exit(pcie->phy);
 err_pm_runtime_put:
